@@ -1054,6 +1054,7 @@ class ModflowMnw2(Package):
                 for n in names:
                     spd[n] = data[n]
                 spd.sort(order="wellid")
+                itmp.append(len(spd))
                 self.stress_period_data[per] = spd
 
         self.itmp = itmp
@@ -1067,7 +1068,7 @@ class ModflowMnw2(Package):
             elif isinstance(mnw, Mnw):
                 self.mnw = {mnw.wellid: mnw}
             self.make_node_data(self.mnw)
-            self.make_stress_period_data(self.mnw)
+            #self.make_stress_period_data(self.mnw)
 
         if stress_period_data is not None:
             if (
