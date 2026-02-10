@@ -39,7 +39,11 @@ def model_is_copy(m1, m2):
             return False
     for k, v in m1.__dict__.items():
         v2 = m2.__dict__[k]
-        if v2 is v and type(v) not in [bool, str, type(None), float, int]:
+        # Allow identity sharing for immutable types including NumPy scalars
+        is_immutable = type(v) in [bool, str, type(None), float, int] or isinstance(
+            v, np.generic
+        )
+        if v2 is v and not is_immutable:
             # some mf6 objects aren't copied with deepcopy
             if isinstance(v, MFSimulationData):
                 continue
@@ -50,11 +54,11 @@ def model_is_copy(m1, m2):
                         return False
             else:
                 return False
-        if k in [
+        if k in {
             "_packagelist",
             "_package_paths",
             "_ftype_num_dict",
-        ]:
+        }:
             continue
         elif k not in m2.__dict__:
             return False
@@ -78,21 +82,29 @@ def package_is_copy(pk1, pk2):
     """
     for k, v in pk1.__dict__.items():
         v2 = pk2.__dict__[k]
-        if v2 is v and type(v) not in [bool, str, type(None), float, int, tuple]:
+        # Allow identity sharing for immutable types including NumPy scalars
+        is_immutable = type(v) in [
+            bool,
+            str,
+            type(None),
+            float,
+            int,
+            tuple,
+        ] or isinstance(v, np.generic)
+        if v2 is v and not is_immutable:
             # Deep copy doesn't work for ModflowUtltas
             if not inspect.isclass(v):
                 return False
-        if k in [
+        if k in {
             "_child_package_groups",
             "_data_list",
-            "simulation_data",
             "blocks",
             "dimensions",
             "post_block_comments",
             "simulation_data",
             "structure",
             "_package_container",
-        ]:
+        }:
             continue
         elif isinstance(v, MFPackage):
             continue
@@ -114,7 +126,7 @@ def package_is_copy(pk1, pk2):
                         return False
         elif isinstance(v, ModelInterface):
             # weak, but calling model_eq would result in recursion
-            if v.__repr__() != v2.__repr__():
+            if repr(v) != repr(v2):
                 return False
         elif isinstance(v, DataInterface):
             if v != v2:
@@ -140,11 +152,10 @@ def package_is_copy(pk1, pk2):
                     if not isinstance(a1, np.ndarray):
                         if a1 != a2:
                             return False
-                    # TODO: this may return False if there are nans
-                    elif not np.allclose(v.array, v2.array):
+                    elif not np.allclose(v.array, v2.array, equal_nan=True):
                         return False
         elif isinstance(v, np.ndarray):
-            if not np.allclose(v, v2):
+            if not np.allclose(v, v2, equal_nan=True):
                 return False
         elif v != v2:
             return False

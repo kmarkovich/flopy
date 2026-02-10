@@ -221,7 +221,10 @@ def test_metis_splitting_with_lak_sfr(function_tmpdir):
 @requires_exe("mf6")
 @requires_pkg("pymetis")
 @requires_pkg("h5py")
+# @requires_pkg("sklearn")
 def test_save_load_node_mapping_structured(function_tmpdir):
+    import pymetis
+
     sim_path = get_example_data_path() / "mf6-freyberg"
     new_sim_path = function_tmpdir / "mf6-freyberg/split_model"
     hdf_file = new_sim_path / "node_map.hdf5"
@@ -235,7 +238,9 @@ def test_save_load_node_mapping_structured(function_tmpdir):
     original_heads = sim.get_model().output.head().get_alldata()[-1]
 
     mfsplit = Mf6Splitter(sim)
-    array = mfsplit.optimize_splitting_mask(nparts=nparts)
+    array = mfsplit.optimize_splitting_mask(
+        nparts=nparts, active_only=True, options=pymetis.Options(seed=42, contig=1)
+    )
     new_sim = mfsplit.split_model(array)
     new_sim.set_sim_path(new_sim_path)
     new_sim.write_simulation()
@@ -1003,12 +1008,13 @@ def test_multi_model(function_tmpdir):
         botm=np.full((1, nrow, ncol), -100.0),
     )
 
-    ixs = flopy.utils.GridIntersect(modelgrid, method="vertex", rtree=True)
+    ixs = flopy.utils.GridIntersect(modelgrid, rtree=True)
     result = ixs.intersect(
         [
             boundary,
         ],
         shapetype="Polygon",
+        geo_dataframe=False,
     )
     r, c = list(zip(*list(result.cellids)))
     idomain = np.zeros(modelgrid.shape, dtype=int)
@@ -1028,7 +1034,12 @@ def test_multi_model(function_tmpdir):
     lengths = []
     for sg in stream_segs:
         sg = string2geom(sg)
-        v = ixs.intersect(sg, shapetype="LineString", sort_by_cellid=True)
+        v = ixs.intersect(
+            sg,
+            shapetype="LineString",
+            sort_by_cellid=True,
+            geo_dataframe=False,
+        )
         cellids += v["cellids"].tolist()
         lengths += v["lengths"].tolist()
 

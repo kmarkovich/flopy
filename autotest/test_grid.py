@@ -11,6 +11,7 @@ from flaky import flaky
 from matplotlib import pyplot as plt
 from modflow_devtools.markers import requires_exe, requires_pkg
 from modflow_devtools.misc import has_pkg
+from scipy.spatial import Delaunay
 
 from autotest.test_dis_cases import case_dis, case_disv
 from autotest.test_grid_cases import GridCases
@@ -22,9 +23,10 @@ from flopy.utils.crs import get_authority_crs
 from flopy.utils.cvfdutil import (
     area_of_polygon,
     centroid_of_polygon,
-    gridlist_to_disv_gridprops,
     to_cvfd,
 )
+from flopy.utils.gridutil import get_disu_kwargs, get_disv_kwargs
+from flopy.utils.lgrutil import Lgr
 from flopy.utils.triangle import Triangle
 from flopy.utils.voronoi import VoronoiGrid
 
@@ -75,6 +77,17 @@ def minimal_vertex_grid_info(minimal_unstructured_grid_info):
     d["ncpl"] = len(cell2d)
     d["nlay"] = 1
     return d
+
+
+@pytest.fixture
+def simple_structured_grid():
+    """Create a simple 10x10 structured grid for testing."""
+    nrow, ncol = 10, 10
+    delr = np.ones(ncol) * 10.0
+    delc = np.ones(nrow) * 10.0
+    top = np.ones((nrow, ncol)) * 10.0
+    botm = np.zeros((1, nrow, ncol))
+    return StructuredGrid(delr=delr, delc=delc, top=top, botm=botm)
 
 
 def test_rotation():
@@ -176,6 +189,92 @@ def test_get_cell_vertices():
         mg.get_cell_vertices(0, i=0)
     with pytest.raises(TypeError):
         mg.get_cell_vertices(nn=0)
+
+
+def test_structured_grid_get_cell_vertices():
+    """Test StructuredGrid.get_cell_vertices() with various input forms"""
+    delr, delc = np.array([10.0] * 3), np.array([10.0] * 4)
+    sg = StructuredGrid(delr=delr, delc=delc)
+
+    # Test node kwarg
+    v1 = sg.get_cell_vertices(node=0)
+    expected = [
+        (np.float64(0.0), np.float64(40.0)),
+        (np.float64(10.0), np.float64(40.0)),
+        (np.float64(10.0), np.float64(30.0)),
+        (np.float64(0.0), np.float64(30.0)),
+    ]
+    assert v1 == expected
+
+    # Test positional args (i, j)
+    v2 = sg.get_cell_vertices(3, 0)
+
+    # Test cellid as tuple (i, j)
+    v3 = sg.get_cell_vertices((3, 0))
+    assert v2 == v3, "Positional and tuple forms should match"
+
+    # Test cellid as 3-element tuple (layer, i, j) - layer ignored
+    v4 = sg.get_cell_vertices(cellid=(0, 3, 0))
+    assert v2 == v4, "2-element and 3-element forms should match"
+
+    # Test named i, j kwargs (backward compatibility)
+    v5 = sg.get_cell_vertices(i=3, j=0)
+    assert v2 == v5, "Named i,j should match"
+
+
+def test_vertex_grid_get_cell_vertices():
+    """Test VertexGrid.get_cell_vertices() with various input forms"""
+    disv_props = get_disv_kwargs(2, 10, 10, 10.0, 10.0, 100.0, [50.0, 0.0])
+    # Remove nvert which is not needed for VertexGrid constructor
+    disv_props.pop("nvert", None)
+    vg = VertexGrid(**disv_props)
+
+    # Test cell2d index as positional arg
+    v1 = vg.get_cell_vertices(5)
+
+    # Test (layer, cell2d) tuple - layer ignored for 2D vertices
+    v2 = vg.get_cell_vertices((0, 5))
+    assert v1 == v2, "cell2d and (layer, cell2d) should match"
+
+    # Test named cellid kwarg
+    v3 = vg.get_cell_vertices(cellid=5)
+    assert v1 == v3, "Positional and kwarg should match"
+
+    # Test node number (>= ncpl, should be converted to cell2d)
+    # Node 105 = layer 1, cell2d 5 (ncpl=100)
+    v4 = vg.get_cell_vertices(node=105)
+
+    # Verify it's the same as (1, 5)
+    v5 = vg.get_cell_vertices((1, 5))
+    assert v4 == v5, "Node and (layer, cell2d) should match"
+
+
+def test_unstructured_grid_get_cell_vertices():
+    """Test UnstructuredGrid.get_cell_vertices() with various input forms"""
+    disu_props = get_disu_kwargs(
+        1, 10, 10, 10.0, 10.0, 100.0, [0.0], return_vertices=True
+    )
+    # Extract only the parameters needed for UnstructuredGrid
+    ug = UnstructuredGrid(
+        vertices=disu_props["vertices"],
+        cell2d=disu_props["cell2d"],
+        top=disu_props["top"],
+    )
+
+    # Test node as positional arg
+    v1 = ug.get_cell_vertices(5)
+
+    # Test (node,) single-element tuple
+    v2 = ug.get_cell_vertices((5,))
+    assert v1 == v2, "Int and tuple forms should match"
+
+    # Test node kwarg
+    v3 = ug.get_cell_vertices(node=5)
+    assert v1 == v3, "cellid and node should match"
+
+    # Test cellid kwarg
+    v4 = ug.get_cell_vertices(cellid=5)
+    assert v1 == v4, "Positional and kwarg should match"
 
 
 def test_get_lrc_get_node():
@@ -419,6 +518,127 @@ def test_unstructured_xyz_intersect(example_data_path):
             raise AssertionError("Unstructured grid intersection failed")
 
 
+def test_structured_grid_intersect_array(simple_structured_grid):
+    """Test StructuredGrid.intersect() with array inputs."""
+    grid = simple_structured_grid
+
+    # Test array input
+    x = np.array([25.0, 50.0, 75.0])
+    y = np.array([25.0, 50.0, 75.0])
+    rows, cols = grid.intersect(x, y, forgive=True)
+
+    # Verify array output
+    assert isinstance(rows, np.ndarray)
+    assert isinstance(cols, np.ndarray)
+    assert len(rows) == 3
+    assert len(cols) == 3
+
+    # Verify equivalence with scalar calls
+    for i in range(len(x)):
+        row_scalar, col_scalar = grid.intersect(x[i], y[i], forgive=True)
+        assert rows[i] == row_scalar
+        assert cols[i] == col_scalar
+
+    # Test out-of-bounds with forgive
+    x_mixed = np.array([50.0, 150.0])
+    y_mixed = np.array([50.0, 50.0])
+    rows_mixed, cols_mixed = grid.intersect(x_mixed, y_mixed, forgive=True)
+    assert not np.isnan(rows_mixed[0])  # First point valid
+    assert np.isnan(rows_mixed[1])  # Second point out of bounds
+
+
+def test_vertex_grid_intersect_array():
+    """Test VertexGrid.intersect() with array inputs."""
+    # Create a simple vertex grid using Delaunay triangulation
+    np.random.seed(42)
+    n_points = 50
+    x_verts = np.random.uniform(0, 100, n_points)
+    y_verts = np.random.uniform(0, 100, n_points)
+    points = np.column_stack([x_verts, y_verts])
+
+    tri = Delaunay(points)
+    vertices = [[i, x_verts[i], y_verts[i]] for i in range(len(x_verts))]
+    cell2d = [[i] + list(tri.simplices[i]) for i in range(len(tri.simplices))]
+
+    ncells = len(cell2d)
+    top = np.ones(ncells) * 10.0
+    botm = np.zeros(ncells)
+    grid = VertexGrid(vertices=vertices, cell2d=cell2d, top=top, botm=botm)
+
+    # Test array input
+    x = np.array([25.0, 50.0, 75.0])
+    y = np.array([25.0, 50.0, 75.0])
+    results = grid.intersect(x, y, forgive=True)
+
+    # Verify array output
+    assert isinstance(results, np.ndarray)
+    assert len(results) == 3
+
+    # Verify equivalence with scalar calls
+    for i in range(len(x)):
+        result_scalar = grid.intersect(x[i], y[i], forgive=True)
+        if np.isnan(results[i]) and np.isnan(result_scalar):
+            continue
+        assert results[i] == result_scalar
+
+    # Test out-of-bounds with forgive
+    x_mixed = np.array([50.0, 200.0])
+    y_mixed = np.array([50.0, 50.0])
+    results_mixed = grid.intersect(x_mixed, y_mixed, forgive=True)
+    assert np.isnan(results_mixed[1])  # Second point out of bounds
+
+
+def test_unstructured_grid_intersect_array():
+    """Test UnstructuredGrid.intersect() with array inputs."""
+    # Create a simple unstructured grid using Delaunay triangulation
+    np.random.seed(42)
+    n_points = 50
+    x_verts = np.random.uniform(0, 100, n_points)
+    y_verts = np.random.uniform(0, 100, n_points)
+    points = np.column_stack([x_verts, y_verts])
+
+    tri = Delaunay(points)
+    vertices = [[i, x_verts[i], y_verts[i]] for i in range(len(x_verts))]
+    iverts = tri.simplices.tolist()
+
+    xcenters = np.mean(points[tri.simplices], axis=1)[:, 0]
+    ycenters = np.mean(points[tri.simplices], axis=1)[:, 1]
+
+    ncells = len(iverts)
+    top = np.ones(ncells) * 10.0
+    botm = np.zeros(ncells)
+    grid = UnstructuredGrid(
+        vertices=vertices,
+        iverts=iverts,
+        xcenters=xcenters,
+        ycenters=ycenters,
+        top=top,
+        botm=botm,
+    )
+
+    # Test array input
+    x = np.array([25.0, 50.0, 75.0])
+    y = np.array([25.0, 50.0, 75.0])
+    results = grid.intersect(x, y, forgive=True)
+
+    # Verify array output
+    assert isinstance(results, np.ndarray)
+    assert len(results) == 3
+
+    # Verify equivalence with scalar calls
+    for i in range(len(x)):
+        result_scalar = grid.intersect(x[i], y[i], forgive=True)
+        if np.isnan(results[i]) and np.isnan(result_scalar):
+            continue
+        assert results[i] == result_scalar
+
+    # Test out-of-bounds with forgive
+    x_mixed = np.array([50.0, 200.0])
+    y_mixed = np.array([50.0, 50.0])
+    results_mixed = grid.intersect(x_mixed, y_mixed, forgive=True)
+    assert np.isnan(results_mixed[1])  # Second point out of bounds
+
+
 @pytest.mark.parametrize("spc_file", ["grd.spc", "grdrot.spc"])
 def test_structured_from_gridspec(example_data_path, spc_file):
     fn = example_data_path / "specfile" / spc_file
@@ -451,7 +671,7 @@ def test_structured_from_gridspec(example_data_path, spc_file):
 
     nvert = modelgrid.nvert
     iverts = modelgrid.iverts
-    maxvertex = max([max(sublist[1:]) for sublist in iverts])
+    maxvertex = max(max(sublist[1:]) for sublist in iverts)
     assert maxvertex + 1 == nvert, f"nvert ({maxvertex + 1}) does not equal {nvert}"
     verts = modelgrid.verts
     assert nvert == verts.shape[0], (
@@ -554,8 +774,8 @@ def unstructured_from_gridspec_driver(example_data_path, gsf_file):
             assert any(ycc == en[2] for ycc in grid.ycellcenters)
 
         # check elevation
-        assert max(grid.top) == max([xyz[2] for xyz in expected_verts])
-        assert min(grid.botm) == min([xyz[2] for xyz in expected_verts])
+        assert max(grid.top) == max(xyz[2] for xyz in expected_verts)
+        assert min(grid.botm) == min(xyz[2] for xyz in expected_verts)
 
 
 def test_unstructured_from_gridspec(example_data_path):
@@ -882,9 +1102,10 @@ def test_tocvfd3():
     delc = 100.0 * np.ones(nrow)
     tp = np.zeros((nrow, ncol))
     bt = -100.0 * np.ones((nlay, nrow, ncol))
-    idomain = np.ones((nlay, nrow, ncol))
-    idomain[:, 2:5, 2:5] = 0
-    sg1 = StructuredGrid(delr=delr, delc=delc, top=tp, botm=bt, idomain=idomain)
+    # Create refine_mask: cells with value 0 will be refined
+    refine_mask = np.ones((nlay, nrow, ncol))
+    refine_mask[:, 2:5, 2:5] = 0
+    sg1 = StructuredGrid(delr=delr, delc=delc, top=tp, botm=bt)
     # inner grid
     nlay = 1
     nrow = ncol = 9
@@ -903,26 +1124,163 @@ def test_tocvfd3():
         idomain=idomain,
     )
 
-    with pytest.deprecated_call():
-        gridprops = gridlist_to_disv_gridprops([sg1, sg2])
-        assert "ncpl" in gridprops
-        assert "nvert" in gridprops
-        assert "vertices" in gridprops
-        assert "cell2d" in gridprops
+    # Use Lgr class to create DISV grid from nested grids
+    lgr = Lgr.from_parent_grid(sg1, refine_mask, ncpp=3, ncppl=1)
+    gridprops = lgr.to_disv_gridprops()
+    assert "ncpl" in gridprops
+    assert "nvert" in gridprops
+    assert "vertices" in gridprops
+    assert "cell2d" in gridprops
 
-        ncpl = gridprops["ncpl"]
-        nvert = gridprops["nvert"]
-        vertices = gridprops["vertices"]
-        cell2d = gridprops["cell2d"]
-        assert ncpl == 121
-        assert nvert == 148
-        assert len(vertices) == nvert
-        assert len(cell2d) == 121
+    ncpl = gridprops["ncpl"]
+    nvert = gridprops["nvert"]
+    vertices = gridprops["vertices"]
+    cell2d = gridprops["cell2d"]
+    assert ncpl == 121
+    assert nvert == 148  # Lgr includes hanging vertices and deduplicates vertices
+    assert len(vertices) == nvert
+    assert len(cell2d) == 121
 
-        # spot check information for cell 28 (zero based)
-        answer = [28, 250.0, 150.0, 7, 38, 142, 143, 45, 46, 44, 38]
-        for i, j in zip(cell2d[28], answer):
-            assert i == j, f"{i} not equal {j}"
+    # spot check information for cell 28 (zero based)
+    answer = [28, 250.0, 150.0, 6, 42, 142, 143, 43, 51, 50]
+    for i, j in zip(cell2d[28], answer):
+        assert i == j, f"{i} not equal {j}"
+
+
+@requires_pkg("shapely")
+def test_tocvfd4():
+    vertdict = {
+        0: [
+            (5950816.752319336, 18880170.417907715),
+            (5954210.671081543, 18884215.132507324),
+            (5958255.385681152, 18880821.213684082),
+            (5954861.467102051, 18876776.499084473),
+            (5950816.752319336, 18880170.417907715),
+        ],
+        1: [
+            (5954210.671081543, 18884215.132507324),
+            (5957604.58972168, 18888259.846923828),
+            (5961649.304077148, 18884865.928527832),
+            (5958255.385681152, 18880821.213684082),
+            (5954210.671081543, 18884215.132507324),
+        ],
+        2: [
+            (5957604.58972168, 18888259.846923828),
+            (5960998.508300781, 18892304.561523438),
+            (5965043.222900391, 18888910.64312744),
+            (5961649.304077148, 18884865.928527832),
+            (5957604.58972168, 18888259.846923828),
+        ],
+        3: [
+            (5954861.467102051, 18876776.499084473),
+            (5958255.385681152, 18880821.213684082),
+            (5962300.100280762, 18877427.29510498),
+            (5958906.18170166, 18873382.580322266),
+            (5954861.467102051, 18876776.499084473),
+        ],
+        4: [
+            (5958255.385681152, 18880821.213684082),
+            (5961649.304077148, 18884865.928527832),
+            (5965694.018920898, 18881472.00970459),
+            (5962300.100280762, 18877427.29510498),
+            (5958255.385681152, 18880821.213684082),
+        ],
+        5: [
+            (5961649.304077148, 18884865.928527832),
+            (5963346.263671875, 18886888.285705566),
+            (5965368.6209106445, 18885191.32647705),
+            (5963671.661682129, 18883168.96887207),
+            (5961649.304077148, 18884865.928527832),
+        ],
+        6: [
+            (5963671.661682129, 18883168.96887207),
+            (5965368.6209106445, 18885191.32647705),
+            (5967390.978271484, 18883494.366882324),
+            (5965694.018920898, 18881472.00970459),
+            (5963671.661682129, 18883168.96887207),
+        ],
+        7: [
+            (5958906.18170166, 18873382.580322266),
+            (5962300.100280762, 18877427.29510498),
+            (5966344.814697266, 18874033.376708984),
+            (5962950.8963012695, 18869988.66192627),
+            (5958906.18170166, 18873382.580322266),
+        ],
+        8: [
+            (5962300.100280762, 18877427.29510498),
+            (5963997.059692383, 18879449.652526855),
+            (5966019.416687012, 18877752.692871094),
+            (5964322.457519531, 18875730.335876465),
+            (5962300.100280762, 18877427.29510498),
+        ],
+        9: [
+            (5963997.059692383, 18879449.652526855),
+            (5965694.018920898, 18881472.00970459),
+            (5967716.376281738, 18879775.050476074),
+            (5966019.416687012, 18877752.692871094),
+            (5963997.059692383, 18879449.652526855),
+        ],
+        10: [
+            (5965694.018920898, 18881472.00970459),
+            (5967390.978271484, 18883494.366882324),
+            (5969413.335510254, 18881797.407714844),
+            (5967716.376281738, 18879775.050476074),
+            (5965694.018920898, 18881472.00970459),
+        ],
+    }
+    verts, iverts = to_cvfd(vertdict)
+    assert iverts[4] == [2, 5, 13, 10, 17, 8, 2]
+
+
+@requires_pkg("shapely", "scipy")
+@requires_exe("triangle")
+@pytest.mark.parametrize(
+    "max_area,domain_size",
+    [
+        (0.1, 2),  # Simple: small domain, large max_area -> few cells
+        (0.02, 5),  # More complex: larger domain, smaller max_area -> more cells
+    ],
+    ids=["simple_voronoi", "complex_voronoi"],
+)
+def test_voronoi_hanging_node_check(function_tmpdir, max_area, domain_size):
+    """
+    Addresses github.com/modflowpy/flopy/issues/2427
+
+    Tests hanging node check works on programmatically generated Voronoi
+    grids. Grids with clean geometry should successfully converge, while
+    the presence of floating-point artifacts like duplicate vertices may
+    prevent convergence.
+    """
+    import warnings
+
+    tri = Triangle(maximum_area=max_area, angle=30, model_ws=function_tmpdir)
+    poly = np.array(
+        ((0, 0), (domain_size, 0), (domain_size, domain_size), (0, domain_size))
+    )
+    tri.add_polygon(poly)
+    tri.build(verbose=False)
+    vor = VoronoiGrid(tri)
+
+    vertdict = {}
+    for icell, iverts_cell in enumerate(vor.iverts):
+        points = []
+        for iv in iverts_cell:
+            points.append(tuple(vor.verts[iv]))
+        points.append(points[0])  # close the polygon
+        vertdict[icell] = points
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        verts_skip, iverts_skip = to_cvfd(vertdict, skip_hanging_node_check=True)
+        assert len(w) == 0
+
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        verts_check, iverts_check = to_cvfd(vertdict, skip_hanging_node_check=False)
+        assert len(w) == 0
+
+    assert len(iverts_skip) == len(iverts_check)
+    assert len(iverts_skip) == len(vertdict)
 
 
 @requires_pkg("shapely")
@@ -1110,23 +1468,29 @@ def test_voronoi_vertex_grid(function_tmpdir):
 @requires_exe("triangle")
 @requires_pkg("shapely", "scipy")
 @pytest.mark.parametrize(
-    "grid_info",
-    (
-        [
-            GridCases.voronoi_polygon(),
-            GridCases.voronoi_rectangle(),
-            GridCases.voronoi_circle(),
-            GridCases.voronoi_nested_circles(),
-            GridCases.voronoi_polygons(),
-            GridCases.voronoi_many_polygons(),
-        ]
-        if (has_pkg("shapely", True) and has_pkg("scipy", True))
-        else []
-    ),
+    "grid_case",
+    [
+        GridCases.voronoi_polygon,
+        GridCases.voronoi_rectangle,
+        GridCases.voronoi_circle,
+        GridCases.voronoi_nested_circles,
+        GridCases.voronoi_polygons,
+        GridCases.voronoi_many_polygons,
+    ]
+    if (has_pkg("shapely", True) and has_pkg("scipy", True))
+    else [],
+    ids=[
+        "voronoi_polygon",
+        "voronoi_rectangle",
+        "voronoi_circle",
+        "voronoi_nested_circles",
+        "voronoi_polygons",
+        "voronoi_many_polygons",
+    ],
 )
-def test_voronoi_grid(request, function_tmpdir, grid_info):
+def test_voronoi_grid(request, function_tmpdir, grid_case):
     name = request.node.name.replace("/", "_").replace("\\", "_").replace(":", "_")
-    ncpl, vor, gridprops, grid = grid_info
+    ncpl, vor, gridprops, grid = grid_case()
 
     # TODO: debug off-by-3 issue
     #  could be a rounding error as described here:
@@ -1361,14 +1725,14 @@ def test_unstructured_convert(unstructured_grid):
 
 
 @requires_pkg("geopandas")
-def test_geo_dataframe(structured_grid, vertex_grid, unstructured_grid):
+def test_geodataframe(structured_grid, vertex_grid, unstructured_grid):
     geopandas = import_optional_dependency("geopandas")
     grids = (structured_grid, vertex_grid, unstructured_grid)
 
     for grid in grids:
-        gdf = grid.geo_dataframe
+        gdf = grid.to_geodataframe()
         if not isinstance(gdf, geopandas.GeoDataFrame):
-            raise TypeError("geo_dataframe not returning GeoDataFrame object")
+            raise TypeError("geodataframe not returning GeoDataFrame object")
 
         geoms = gdf.geometry.values
         for node, geom in enumerate(geoms):
@@ -1431,3 +1795,111 @@ def test_unstructured_iverts_cleanup():
 
     if clean_ugrid.nvert != cleaned_vert_num:
         raise AssertionError("Improper number of vertices for cleaned 'shared' iverts")
+
+
+def test_structured_grid_intersect_edge_case(simple_structured_grid):
+    """Test StructuredGrid.intersect() edge case: out-of-bounds x,y with z.
+
+    This tests the specific case where x,y are out of bounds and z is provided.
+    The expected behavior is to return (None, nan, nan).
+    """
+    grid = simple_structured_grid
+
+    # Test out-of-bounds x,y with z coordinate
+    lay, row, col = grid.intersect(-50.0, -50.0, z=5.0, forgive=True)
+
+    # Expected behavior: lay=None, row=nan, col=nan
+    assert lay is None, f"Expected lay=None, got {lay}"
+    assert np.isnan(row), f"Expected row=nan, got {row}"
+    assert np.isnan(col), f"Expected col=nan, got {col}"
+
+
+def test_structured_grid_get_node():
+    sg = StructuredGrid(nlay=3, nrow=4, ncol=5, delr=np.ones(5), delc=np.ones(4))
+
+    # 3D node numbers
+    assert sg.get_node((0, 0, 0)) == [0]
+    assert sg.get_node((1, 0, 0)) == [20]
+    assert sg.get_node((0, 1, 2)) == [7]
+    assert sg.get_node([(0, 0, 0), (1, 0, 0)]) == [0, 20]
+    assert sg.get_node([(0, 0, 0), (2, 3, 4)]) == [0, 59]
+
+    # 2D node numbers (layer ignored)
+    assert sg.get_node((0, 1, 2), node2d=True) == [7]
+    assert sg.get_node((1, 1, 2), node2d=True) == [7]
+    assert sg.get_node((2, 1, 2), node2d=True) == [7]
+    assert sg.get_node([(0, 0, 0), (1, 0, 0), (2, 1, 2)], node2d=True) == [0, 0, 7]
+
+
+def test_vertex_grid_get_node():
+    nlay = 3
+    ncpl = 100
+    vertices = [[i, float(i % 10), float(i // 10)] for i in range(121)]
+    cell2d = []
+    for i in range(ncpl):
+        # Simple quad cells
+        iv = [i, i + 1, i + 11, i + 10]
+        cell2d.append([i, 0.0, 0.0, 4] + iv)
+    vg = VertexGrid(
+        vertices=vertices,
+        cell2d=cell2d,
+        nlay=nlay,
+        ncpl=ncpl,
+    )
+
+    # 3D node number
+    assert vg.get_node((0, 5)) == [5]
+    assert vg.get_node((1, 5)) == [105]
+    assert vg.get_node((2, 99)) == [299]
+    assert vg.get_node([(0, 5), (1, 5)]) == [5, 105]
+
+    # 2D node number
+    assert vg.get_node((0, 5), node2d=True) == [5]
+    assert vg.get_node((1, 5), node2d=True) == [5]
+    assert vg.get_node((2, 5), node2d=True) == [5]
+    assert vg.get_node([(0, 10), (1, 20), (2, 30)], node2d=True) == [10, 20, 30]
+
+    with pytest.raises(ValueError, match="VertexGrid cellid must be"):
+        vg.get_node((0, 1, 2))
+
+    with pytest.raises(IndexError, match=r"Layer .* out of range"):
+        vg.get_node((5, 10))
+
+    with pytest.raises(IndexError, match=r"Cell2d .* out of range"):
+        vg.get_node((0, 200))
+
+
+def test_unstructured_grid_get_node():
+    ncpl = [100]
+    vertices = [[i, float(i % 10), float(i // 10)] for i in range(121)]
+    iverts = [[i, i + 1, i + 11, i + 10] for i in range(100)]
+    ug = UnstructuredGrid(
+        vertices=vertices,
+        iverts=iverts,
+        ncpl=ncpl,
+    )
+
+    # Test plain integers
+    assert ug.get_node(5) == [5]
+    assert ug.get_node(10) == [10]
+
+    # Test tuples
+    assert ug.get_node((5,)) == [5]
+    assert ug.get_node((10,)) == [10]
+
+    # Test list of integers
+    assert ug.get_node([5, 10, 99]) == [5, 10, 99]
+
+    # Test list of tuples
+    assert ug.get_node([(5,), (10,), (99,)]) == [5, 10, 99]
+
+    # node2d parameter should have no effect
+    assert ug.get_node(5, node2d=True) == [5]
+    assert ug.get_node((5,), node2d=True) == [5]
+    assert ug.get_node([5, 10], node2d=True) == [5, 10]
+
+    with pytest.raises(ValueError, match="UnstructuredGrid cellid"):
+        ug.get_node((0, 1))
+
+    with pytest.raises(IndexError, match=r"Node .* out of range"):
+        ug.get_node(200)

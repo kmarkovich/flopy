@@ -113,8 +113,8 @@ sim_data = {
     },
 }
 
-for sim_name in sim_data:
-    for fname, fhash in sim_data[sim_name].items():
+for sim_name, sim_files in sim_data.items():
+    for fname, fhash in sim_files.items():
         pooch.retrieve(
             url=f"https://github.com/modflowpy/flopy/raw/develop/examples/data/{sim_name}/{fname}",
             fname=fname,
@@ -937,20 +937,19 @@ plt.tight_layout()
 plt.colorbar(pc)
 # -
 
-# #### `write_shapefile()`
+# #### `to_geodataframe()`
 #
-# Method to write a shapefile of the grid with just the cellid attributes. Input parameters include:
+# Method to create a geopandas GeoDataFrame of the grid with just the cellid attributes.
 #
-#    - `filename` : shapefile name
-#    - `crs` : either an epsg integer code of model coordinate system, a proj4 string or pyproj CRS instance
-#    - `prjfile` : path to ".prj" projection file that describes the model coordinate system
+#
 
 # +
-# write a shapefile
+# Create a GeoDataFrame and write it to file
 shp_name = os.path.join(gridgen_ws, "freyberg-6_grid.shp")
-epsg = 32614
+modelgrid.crs = 32614
 
-ml.modelgrid.write_shapefile(shp_name, crs=epsg)
+gdf = ml.modelgrid.to_geodataframe()
+gdf.to_file(shp_name)
 # -
 
 try:

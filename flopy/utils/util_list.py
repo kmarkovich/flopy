@@ -10,6 +10,7 @@ util_list module.  Contains the mflist class.
 
 import os
 import warnings
+from os import PathLike
 
 import numpy as np
 import pandas as pd
@@ -123,6 +124,76 @@ class MfList(DataInterface, DataListInterface):
         d = create_empty_recarray(ncell, self.dtype, default_value=-1.0e10)
         return d
 
+    def to_geodataframe(
+        self, gdf=None, kper=0, full_grid=True, shorten_attr=False, **kwargs
+    ):
+        """
+        Method to add data to a GeoDataFrame for exporting as a geospatial file
+
+        Parameters
+        ----------
+        gdf : GeoDataFrame
+            optional GeoDataFrame instance. If GeoDataFrame is None, one will be
+            constructed from modelgrid information
+        kper : int
+            stress period to export
+        full_grid : bool
+            boolean flag for full grid dataframe construction. Default is True
+        shorten_attr : bool
+            method to shorten attribute names for shapefile restrictions
+
+        Returns
+        -------
+            GeoDataFrame
+        """
+        from ..export.shapefile_utils import shape_attr_name
+
+        if self.model is None:
+            return gdf
+        else:
+            modelgrid = self.model.modelgrid
+            if modelgrid is None:
+                return gdf
+
+            if gdf is None:
+                gdf = modelgrid.to_geodataframe()
+
+            data = self.array
+
+            col_names = []
+            for name, array4d in data.items():
+                if shorten_attr:
+                    name = shape_attr_name(name, length=4)
+                else:
+                    name = f"{self.name[0].lower()}_{name}"
+                array = array4d[kper]
+                if modelgrid.grid_type == "unstructured":
+                    array = array.ravel()
+                    aname = name
+                    if shorten_attr:
+                        aname = f"{name}{kper}"
+                    gdf[aname] = array
+                    col_names.append(aname)
+                else:
+                    if modelgrid.nlay is None:
+                        nlay = 1
+                    else:
+                        nlay = modelgrid.nlay
+                    for lay in range(nlay):
+                        arr = array[lay].ravel()
+                        if shorten_attr:
+                            aname = f"{name}{lay}{kper}"
+                        else:
+                            aname = f"{name}_{lay}_{kper}"
+                        gdf[aname] = arr.ravel()
+                        col_names.append(aname)
+
+            if not full_grid:
+                gdf = gdf.dropna(subset=col_names, how="all")
+                gdf = gdf.dropna(axis="columns", how="all")
+
+            return gdf
+
     def export(self, f, **kwargs):
         from .. import export
 
@@ -234,7 +305,12 @@ class MfList(DataInterface, DataListInterface):
                 return -1
         # If an external file, have to load it
         if self.__vtype[kper] == str:
-            return self.__fromfile(self.__data[kper]).shape[0]
+            t = self.__fromfile(self.__data[kper])
+            if t.shape == ():
+                out = 1
+            else:
+                out = t.shape[0]
+            return out
         if self.__vtype[kper] == np.recarray:
             return self.__data[kper].shape[0]
         # If not any of the above, it must be an int
@@ -263,7 +339,7 @@ class MfList(DataInterface, DataListInterface):
         fmts = []
         for field in self.dtype.descr:
             vtype = field[1][1].lower()
-            if vtype in ("i", "b"):
+            if vtype in {"i", "b"}:
                 if use_free:
                     fmts.append("%9d")
                 else:
@@ -343,7 +419,7 @@ class MfList(DataInterface, DataListInterface):
                     self.__cast_dataframe(kper, d)
                 elif isinstance(d, int):
                     self.__cast_int(kper, d)
-                elif isinstance(d, str):
+                elif isinstance(d, (str, PathLike)):
                     self.__cast_str(kper, d)
                 elif d is None:
                     self.__data[kper] = -1
@@ -588,9 +664,10 @@ class MfList(DataInterface, DataListInterface):
     def get_filenames(self):
         kpers = list(self.data.keys())
         kpers.sort()
+        max_kpers = max(kpers)
         filenames = []
         first = kpers[0]
-        for kper in list(range(0, max(self._model.nper, max(kpers) + 1))):
+        for kper in range(0, max(self._model.nper, max_kpers + 1)):
             # Fill missing early kpers with 0
             if kper < first:
                 itmp = 0
@@ -633,9 +710,10 @@ class MfList(DataInterface, DataListInterface):
         if (len(kpers) == 0) and (pak_name_str == "mfusgwel"):  # must be cln wels
             kpers += [kper for kper in list(cln_data.data.keys()) if kper not in kpers]
         kpers.sort()
+        max_kpers = max(kpers)
         first = kpers[0]
         if single_per is None:
-            loop_over_kpers = list(range(0, max(nper, max(kpers) + 1)))
+            loop_over_kpers = list(range(0, max(nper, max_kpers + 1)))
         else:
             if not isinstance(single_per, list):
                 single_per = [single_per]
@@ -833,11 +911,12 @@ class MfList(DataInterface, DataListInterface):
             assert idx_val[0] in self.dtype.names
         kpers = list(self.data.keys())
         kpers.sort()
+        max_kpers = max(kpers)
         values = []
-        for kper in range(0, max(self._model.nper, max(kpers))):
+        for kper in range(0, max(self._model.nper, max_kpers)):
             if kper < min(kpers):
                 values.append(0)
-            elif kper > max(kpers) or kper not in kpers:
+            elif kper > max_kpers or kper not in kpers:
                 values.append(values[-1])
             else:
                 kper_data = self.__data[kper]
@@ -1045,7 +1124,7 @@ class MfList(DataInterface, DataListInterface):
                     arr[rec["k"], rec["i"], rec["j"]] += rec[name]
                     cnt[rec["k"], rec["i"], rec["j"]] += 1.0
             # average keys that should not be added
-            if name not in ("cond", "flux"):
+            if name not in {"cond", "flux"}:
                 idx = cnt > 0.0
                 arr[idx] /= cnt[idx]
             if mask:

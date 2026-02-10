@@ -25,10 +25,10 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
         with:
           cache-dependency-glob: "**/pyproject.toml"
 
@@ -50,16 +50,16 @@ jobs:
             cat removed_dependencies.txt
             uv pip uninstall --yes $rmvd
           fi
-      
+
       - name: Upload removed dependencies log
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: smoke-test-removed-dependencies
           path: ./removed_dependencies.txt
 
       - name: Install Modflow executables
         uses: modflowpy/install-modflow-action@v1
-      
+
       - name: Smoke test (${{ matrix.optdeps }})
         working-directory: autotest
         run: uv run pytest -v -n=auto -m "not regression and not example" --cov=flopy --cov-report=xml --durations=0 --keep-failed=.failed
@@ -67,9 +67,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload failed test outputs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: failed-smoke-${{ runner.os }}-${{ env.PYTHON_VERSION }}
           path: ./autotest/.failed/**
-      

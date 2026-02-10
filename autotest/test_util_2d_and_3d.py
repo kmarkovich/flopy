@@ -559,7 +559,7 @@ def test_mflist(function_tmpdir, example_data_path):
     assert len(df.groupby("per").sum()) == 4
     assert df.groupby("per")["cond"].sum().loc[3] == 100.0
     assert df.groupby("per")["stage"].mean().loc[0] == 2.0
-    assert df.groupby(["k", "i", "j"])["rbot"].count()[(1, 2, 4)] == 10
+    assert df.groupby(["k", "i", "j"])["rbot"].count()[1, 2, 4] == 10
 
 
 def test_how(function_tmpdir):
@@ -614,3 +614,32 @@ def test_mflist_fromfile(function_tmpdir):
     flx_array = wel.stress_period_data.array["flux"][0]
     for k, i, j, flx in zip(wel_data.k, wel_data.i, wel_data.j, wel_data.flux):
         assert flx_array[k, i, j] == flx
+
+
+def test_pathlib_support(function_tmpdir):
+    model_ws = function_tmpdir
+    out_well_spd = {0: model_ws.joinpath("wel.txt")}
+    with open(out_well_spd[0], "w") as f:
+        f.write("0 2 2 -10\n")
+        f.write("0 1 2 -10\n")
+    m = Modflow("test_model", model_ws=model_ws, exe_name="mf2005")
+    wel = ModflowWel(
+        m,
+        stress_period_data=out_well_spd,
+        ipakcb=740,
+    )
+    m.write_input()
+
+
+def test_open_close_one_val(function_tmpdir):
+    model_ws = function_tmpdir
+    out_well_spd = {0: model_ws.joinpath("wel.txt")}
+    with open(out_well_spd[0], "w") as f:
+        f.write("0 2 2 -10\n")
+    m = Modflow("test_model", model_ws=model_ws, exe_name="mf2005")
+    wel = ModflowWel(
+        m,
+        stress_period_data=out_well_spd,
+        ipakcb=740,
+    )
+    m.write_input()

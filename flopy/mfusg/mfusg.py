@@ -1,7 +1,8 @@
 """Mfusg module."""
 
-import os
+import os.path
 from inspect import getfullargspec
+from os import PathLike, curdir
 from typing import Union
 
 import flopy
@@ -16,7 +17,7 @@ class MfUsg(Modflow):
 
     Parameters
     ----------
-    modelname : str or PathLike, default "modflowusgtest".
+    modelname : str or PathLike, default "modflowusgtest"
         Name of model.  This string will be used to name the MODFLOW input
         that are created with write_model.
     namefile_ext : str, default "nam"
@@ -27,14 +28,18 @@ class MfUsg(Modflow):
         Specify if model grid is structured (default) or unstructured.
     listunit : int, default 2
         Unit number for the list file.
-    model_ws : str, default "."
+    model_ws : str, default "." (curdir)
         Model workspace.  Directory name to create model data sets.
-        Default is the present working directory.
     external_path : str, optional
         Location for external files.
     verbose : bool, default False
         Print additional information to the screen.
-
+    free_format_npl : int, optional
+        Number of values per line when writing free-format arrays. When set
+        (e.g., ``free_format_npl=10``), arrays are written with that many
+        values per line instead of all values on a single line. This produces
+        block-format output, improving readability for large models.
+        Default is None (all values on one line).
 
     Attributes
     ----------
@@ -56,65 +61,58 @@ class MfUsg(Modflow):
 
     def __init__(
         self,
-        modelname="modflowusgtest",
+        modelname="mfusgtest",
+        namefile_ext="nam",
+        version="mfusg",
+        exe_name: Union[str, PathLike] = "mfusg",
         structured=True,
-        model_ws: Union[str, os.PathLike] = os.curdir,
+        listunit=2,
+        model_ws: Union[str, PathLike] = curdir,
+        external_path=None,
+        verbose=False,
+        free_format_npl=None,
         **kwargs,
     ):
-        """Constructs the MfUsg object. Overrides the parent Modflow object."""
-        valid_args_defaults = {
-            "namefile_ext": "nam",
-            "exe_name": "mfusg",
-            "listunit": 2,
-            "external_path": None,
-            "verbose": False,
-        }
-
-        for arg, default_value in valid_args_defaults.items():
-            setattr(self, arg, kwargs.pop(arg, default_value))
-
-        # remove "version" from kwarg if inadvertently provided
-        try:
-            kwargs.pop("version")
-        except KeyError:
-            pass
-
         super().__init__(
-            modelname,
-            self.namefile_ext,
-            version="mfusg",
-            exe_name=self.exe_name,
+            modelname=modelname,
+            namefile_ext=namefile_ext,
+            version=version,
+            exe_name=exe_name,
             structured=structured,
-            listunit=self.listunit,
+            listunit=listunit,
             model_ws=model_ws,
-            external_path=self.external_path,
-            verbose=self.verbose,
+            external_path=external_path,
+            verbose=verbose,
+            free_format_npl=free_format_npl,
             **kwargs,
         )
+
+        self.itrnsp = 0  # transport simulation flag
+        self.mcomp = 0  # number of chemical components
+        self.iheat = 0  # flag for heat transport
+        self.idpf = 0  # flag for dual porosity flow
+        self.icln = 0  # flag for CLN package
+
         # Create a dictionary to map package with package object.
         # This is used for loading models.
         self.mfnam_packages = {
             "zone": flopy.modflow.ModflowZon,
             "mult": flopy.modflow.ModflowMlt,
             "pval": flopy.modflow.ModflowPval,
-            "bas6": flopy.modflow.ModflowBas,
-            "dis": flopy.modflow.ModflowDis,
+            "bas6": flopy.mfusg.MfUsgBas,
+            "dis": flopy.mfusg.MfUsgDis,
             "hfb6": flopy.modflow.ModflowHfb,
-            "chd": flopy.modflow.ModflowChd,
             "fhb": flopy.modflow.ModflowFhb,
             "drn": flopy.modflow.ModflowDrn,
             "drt": flopy.modflow.ModflowDrt,
-            "rch": flopy.modflow.ModflowRch,
-            "evt": flopy.modflow.ModflowEvt,
             "ghb": flopy.modflow.ModflowGhb,
             "riv": flopy.modflow.ModflowRiv,
             "str": flopy.modflow.ModflowStr,
             "sfr": flopy.modflow.ModflowSfr2,
-            "lak": flopy.modflow.ModflowLak,
             "gage": flopy.modflow.ModflowGage,
-            "oc": flopy.modflow.ModflowOc,
             "sub": flopy.modflow.ModflowSub,
             "swt": flopy.modflow.ModflowSwt,
+            "chd": flopy.modflow.ModflowChd,
             "disu": flopy.mfusg.MfUsgDisU,
             "sms": flopy.mfusg.MfUsgSms,
             "wel": flopy.mfusg.MfUsgWel,
@@ -122,6 +120,16 @@ class MfUsg(Modflow):
             "lpf": flopy.mfusg.MfUsgLpf,
             "cln": flopy.mfusg.MfUsgCln,
             "gnc": flopy.mfusg.MfUsgGnc,
+            "bct": flopy.mfusg.MfUsgBct,
+            "pcb": flopy.mfusg.MfUsgPcb,
+            "ddf": flopy.mfusg.MfUsgDdf,
+            "mdt": flopy.mfusg.MfUsgMdt,
+            "dpf": flopy.mfusg.MfUsgDpf,
+            "dpt": flopy.mfusg.MfUsgDpt,
+            "rch": flopy.mfusg.MfUsgRch,
+            "oc": flopy.mfusg.MfUsgOc,
+            "lak": flopy.mfusg.MfUsgLak,
+            "evt": flopy.mfusg.MfUsgEvt,
         }
 
     def __repr__(self):
@@ -149,9 +157,9 @@ class MfUsg(Modflow):
         cls,
         f: str,
         version="mfusg",
-        exe_name: Union[str, os.PathLike] = "mfusg",
+        exe_name: Union[str, PathLike] = "mfusg",
         verbose=False,
-        model_ws: Union[str, os.PathLike] = os.curdir,
+        model_ws: Union[str, PathLike] = curdir,
         load_only=None,
         forgive=False,
         check=True,
@@ -168,7 +176,7 @@ class MfUsg(Modflow):
             MODFLOW executable name.
         verbose : bool, default False
             Show messages that can be useful for debugging.
-        model_ws : str or PathLike, default "."
+        model_ws : str or PathLike, default "." (curdir)
             Model workspace path. Default is the current directory.
         load_only : list, str or None
             List of case insensitive packages to load, e.g. ["bas6", "lpf"].
@@ -234,6 +242,12 @@ class MfUsg(Modflow):
         if "DISU" in ext_pkg_d:
             model.structured = False
 
+        if "DPF" in ext_pkg_d:
+            model.idpf = 1
+
+        if "CLN" in ext_pkg_d:
+            model.icln = 1
+
         # reset unit number for list file
         if "LIST" in ext_pkg_d:
             unitnumber = ext_pkg_d["LIST"]
@@ -254,9 +268,6 @@ class MfUsg(Modflow):
             bas.filehandle.seek(start)
         if verbose:
             print(f"ModflowBas6 free format:{model.free_format_input}\n")
-
-        # set mfpar / pval
-        cls._set_mfpar_pval(model, ext_unit_dict, ext_pkg_d)
 
         files_successfully_loaded, files_not_loaded = cls._load_packages(
             model, ext_unit_dict, ext_pkg_d, load_only, forgive
@@ -324,6 +335,24 @@ class MfUsg(Modflow):
         ext_unit_dict.pop(dis_key).filehandle.close()
 
         dis.start_datetime = model.start_datetime
+
+        # BCT has to be loaded before other transport packages for MFUSG-TRANSPORT
+        bct_key = ext_pkg_d.get("BCT")
+        if bct_key is not None:
+            bctnamdata = ext_unit_dict[bct_key]
+            bct = bctnamdata.package.load(
+                bctnamdata.filehandle,
+                model,
+                ext_unit_dict=ext_unit_dict,
+                check=False,
+            )
+            files_successfully_loaded.append(bctnamdata.filename)
+            if model.verbose:
+                print(f"   {bct.name[0]:4s} package load...success")
+            ext_unit_dict.pop(bct_key).filehandle.close()
+
+        # set mfpar / pval
+        cls._set_mfpar_pval(model, ext_unit_dict, ext_pkg_d)
 
         load_only = cls._prepare_load_only(load_only, ext_pkg_d)
 
@@ -423,7 +452,7 @@ class MfUsg(Modflow):
             print(f"      {os.path.basename(item.filename)}")
         if key not in model.pop_key_list:
             # do not add unit number (key) if it already exists
-            if key not in model.external_units:
+            if key not in model.external_units and key not in model.output_units:
                 model.external_fnames.append(item.filename)
                 model.external_units.append(key)
                 model.external_binflag.append("binary" in item.filetype.lower())
@@ -513,7 +542,7 @@ class MfUsg(Modflow):
                     print(f"      {os.path.basename(fname)}")
 
 
-def fmt_string(array):
+def fmt_string(array, free=False):
     """
     Returns a C-style fmt string for numpy savetxt that corresponds to
     the dtype.
@@ -521,14 +550,21 @@ def fmt_string(array):
     Parameters
     ----------
     array : numpy array
+    free : bool, optional
+        If True, use high-precision format (%16.9G) for floats which requires
+        FREE format in the BAS file. If False (default), use fixed 10-character
+        format (%10.2e) compatible with MODFLOW-USG's fixed-width input format.
     """
     fmts = []
+    # When FREE format is enabled in BAS, we can use high-precision output.
+    # Without FREE, MODFLOW-USG expects 10-character fixed-width fields.
+    float_fmt = "%16.9G" if free else "%10.2e"
     for field in array.dtype.descr:
         vtype = field[1][1].lower()
-        if vtype in ("i", "b"):
+        if vtype in {"i", "b"}:
             fmts.append("%10d")
         elif vtype == "f":
-            fmts.append("%14.6g")
+            fmts.append(float_fmt)
         elif vtype == "o":
             fmts.append("%10s")
         elif vtype == "s":

@@ -7,8 +7,21 @@ from flaky import flaky
 from modflow_devtools.markers import requires_exe
 
 from autotest.conftest import get_example_data_path
-from flopy.mfusg import MfUsg, MfUsgDisU, MfUsgLpf, MfUsgSms, MfUsgWel
-from flopy.modflow import ModflowBas, ModflowDis, ModflowDrn, ModflowGhb, ModflowOc
+from flopy.mfusg import (
+    MfUsg,
+    MfUsgBas,
+    MfUsgDisU,
+    MfUsgLpf,
+    MfUsgOc,
+    MfUsgSms,
+    MfUsgWel,
+)
+from flopy.modflow import (
+    #    ModflowBas,
+    ModflowDis,
+    ModflowDrn,
+    ModflowGhb,
+)
 from flopy.utils import Util2d, Util3d
 
 
@@ -31,7 +44,6 @@ def freyberg_usg_model_path(example_data_path):
 def test_usg_disu_load(function_tmpdir, mfusg_01A_nestedgrid_nognc_model_path):
     fname = mfusg_01A_nestedgrid_nognc_model_path / "flow.disu"
     assert os.path.isfile(fname), f"disu file not found {fname}"
-
     # Create the model
     m = MfUsg(modelname="usgload", verbose=True)
 
@@ -99,7 +111,7 @@ def test_usg_model(function_tmpdir):
         exe_name="mfusg",
     )
     dis = ModflowDis(mf, nlay=1, nrow=11, ncol=11)
-    bas = ModflowBas(mf)
+    bas = MfUsgBas(mf)
     lpf = MfUsgLpf(mf)
     wel = MfUsgWel(mf, stress_period_data={0: [[0, 5, 5, -1.0]]})
     ghb = ModflowGhb(
@@ -111,7 +123,7 @@ def test_usg_model(function_tmpdir):
             ]
         },
     )
-    oc = ModflowOc(mf)
+    oc = MfUsgOc(mf)
     sms = MfUsgSms(mf, options="complex")
 
     # run with defaults
@@ -151,9 +163,9 @@ def test_usg_load_01B(function_tmpdir, mfusg_01A_nestedgrid_nognc_model_path):
     msg = "flopy failed on loading mfusg lpf package"
     assert isinstance(m.lpf, MfUsgLpf), msg
     msg = "flopy failed on loading mfusg bas package"
-    assert isinstance(m.bas6, ModflowBas), msg
+    assert isinstance(m.bas6, MfUsgBas), msg
     msg = "flopy failed on loading mfusg oc package"
-    assert isinstance(m.oc, ModflowOc), msg
+    assert isinstance(m.oc, MfUsgOc), msg
     msg = "flopy failed on loading mfusg sms package"
     assert isinstance(m.sms, MfUsgSms), msg
 
@@ -178,9 +190,9 @@ def test_usg_load_45usg(function_tmpdir, example_data_path):
     msg = "flopy failed on loading mfusg lpf package"
     assert isinstance(m.lpf, MfUsgLpf), msg
     msg = "flopy failed on loading mfusg bas package"
-    assert isinstance(m.bas6, ModflowBas), msg
+    assert isinstance(m.bas6, MfUsgBas), msg
     msg = "flopy failed on loading mfusg oc package"
-    assert isinstance(m.oc, ModflowOc), msg
+    assert isinstance(m.oc, MfUsgOc), msg
     msg = "flopy failed on loading mfusg sms package"
     assert isinstance(m.sms, MfUsgSms), msg
     msg = "flopy failed on loading mfusg drn package"
@@ -392,3 +404,70 @@ def test_load_usg(function_tmpdir, fpth):
 
     m.change_model_ws(function_tmpdir)
     m.write_input()
+
+
+def test_free_format_npl(function_tmpdir, freyberg_usg_model_path):
+    """Test that free_format_npl controls values per line in array output."""
+    nam = "freyberg.usg.nam"
+
+    # Load model with free_format_npl=10
+    m = MfUsg.load(nam, model_ws=freyberg_usg_model_path)
+    m.free_format_npl = 10
+    m.model_ws = function_tmpdir
+    m.write_input()
+
+    # Read the written RCH file and check values per line
+    rch_file = function_tmpdir / f"{m.name}.rch"
+    assert rch_file.is_file()
+
+    with open(rch_file) as f:
+        lines = f.readlines()
+
+    # Find a data line (not a header/control record) with multiple values
+    for line in lines:
+        parts = line.strip().split()
+        if len(parts) >= 5:
+            try:
+                [float(p) for p in parts]
+                # This is a data line — verify it has at most 10 values
+                assert len(parts) <= 10, (
+                    f"Expected at most 10 values per line, got {len(parts)}"
+                )
+                break
+            except ValueError:
+                continue
+
+    # Also verify default behavior (npl=None) writes all values on one line
+    m2 = MfUsg.load(nam, model_ws=freyberg_usg_model_path)
+    assert m2.free_format_npl is None
+    out2 = function_tmpdir / "default"
+    out2.mkdir()
+    m2.model_ws = out2
+    m2.write_input()
+
+    rch_file2 = out2 / f"{m2.name}.rch"
+    with open(rch_file2) as f:
+        lines2 = f.readlines()
+
+    # Find a data line — with default npl it should have more than 10 values
+    for line in lines2:
+        parts = line.strip().split()
+        if len(parts) >= 5:
+            try:
+                [float(p) for p in parts]
+                assert len(parts) > 10, (
+                    f"Expected more than 10 values per line with default npl, "
+                    f"got {len(parts)}"
+                )
+                break
+            except ValueError:
+                continue
+
+
+def test_free_format_npl_constructor():
+    """Test that free_format_npl can be set via constructor kwarg."""
+    m = MfUsg(free_format_npl=10)
+    assert m.free_format_npl == 10
+
+    m2 = MfUsg()
+    assert m2.free_format_npl is None

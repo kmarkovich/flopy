@@ -6,9 +6,10 @@ pakbase module
 """
 
 import abc
-import os
+import os.path
 import webbrowser as wb
 from itertools import takewhile
+from os import PathLike
 from typing import Union
 
 import numpy as np
@@ -272,7 +273,7 @@ class PackageInterface:
                     chk.property_threshold_values[kp],
                     name,
                 )
-        if self.name[0] in ["UPW", "LPF"]:
+        if self.name[0] in {"UPW", "LPF"}:
             storage_coeff = "STORAGECOEFFICIENT" in self.options or (
                 "storagecoefficient" in self.__dict__
                 and self.storagecoefficient.get_data()
@@ -287,18 +288,18 @@ class PackageInterface:
 
         Parameters
         ----------
-        f : str or file handle
+        f : str, PathLike or file handle, optional
             String defining file name or file handle for summary file
             of check method output. If a string is passed a file handle
             is created. If f is None, check method does not write
             results to a summary file. (default is None)
-        verbose : bool
+        verbose : bool, default True
             Boolean flag used to determine if check method results are
             written to the screen
-        level : int
+        level : int, default 1
             Check method analysis level. If level=0, summary checks are
             performed. If level=1, full checks are performed.
-        checktype : check
+        checktype : check, optional
             Checker type to be used. By default class check is used from
             check.py.
 
@@ -334,7 +335,7 @@ class PackageInterface:
         else:
             txt = f"check method not implemented for {self.name[0]} Package."
             if f is not None:
-                if isinstance(f, str):
+                if isinstance(f, (str, PathLike)):
                     pth = os.path.join(self.parent.model_ws, f)
                     f = open(pth, "w")
                     f.write(txt)
@@ -514,7 +515,7 @@ class Package(PackageInterface):
             # Oc88 but is not a MfList
             spd = getattr(self, "stress_period_data")
             if isinstance(item, MfList):
-                if not isinstance(item, list) and not isinstance(item, tuple):
+                if not isinstance(item, (list, tuple)):
                     msg = f"package.__getitem__() kper {item} not in data.keys()"
                     assert item in list(spd.data.keys()), msg
                     return spd[item]
@@ -647,7 +648,7 @@ class Package(PackageInterface):
         for attr in attrs:
             if "__" in attr or "data_list" in attr:
                 continue
-            dl.append(self.__getattribute__(attr))
+            dl.append(getattr(self, attr))
         return dl
 
     def export(self, f, **kwargs):
@@ -672,6 +673,67 @@ class Package(PackageInterface):
         from . import export
 
         return export.utils.package_export(f, self, **kwargs)
+
+    def to_geodataframe(
+        self, gdf=None, kper=0, full_grid=True, shorten_attr=False, **kwargs
+    ):
+        """
+        Method to create a GeoDataFrame from a modflow package
+
+        Parameters
+        ----------
+        gdf : GeoDataFrame
+            optional geopandas geodataframe object to add data to. Default is None
+        kper : int
+            stress period to get transient data from
+        full_grid : bool
+            boolean flag for full grid dataframe construction. Default is True.
+            If False, geodataframe will only include active cells
+        shorten_attr : bool
+            method to truncate attribute names for shapefile restrictions
+
+        Returns
+        -------
+            gdf : GeoDataFrame
+        """
+        from .mbase import BaseModel
+
+        if gdf is None:
+            if isinstance(self.parent, BaseModel):
+                modelgrid = self.parent.modelgrid
+                if modelgrid is not None:
+                    gdf = modelgrid.to_geodataframe()
+                else:
+                    raise AttributeError(
+                        "model does not have a grid instance, "
+                        "please supply a geodataframe"
+                    )
+            else:
+                raise AssertionError(
+                    "Package does not have a model instance, "
+                    "please supply a geodataframe"
+                )
+
+        for attr, value in self.__dict__.items():
+            if callable(getattr(value, "to_geodataframe", None)):
+                if isinstance(value, (BaseModel, PackageInterface)):
+                    continue
+                # do not pass sparse in here, make sparse after all data has been
+                #  added to geodataframe
+                gdf = value.to_geodataframe(
+                    gdf,
+                    kper=kper,
+                    full_grid=True,
+                    shorten_attr=shorten_attr,
+                    forgive=True,
+                )
+
+        if not full_grid:
+            col_names = [i for i in gdf if i not in ("geometry", "node", "row", "col")]
+            gdf = gdf.dropna(subset=col_names, how="all")
+            gdf = gdf.dropna(axis="columns", how="all")
+
+        return gdf
 
     def _generate_heading(self):
         """Generate heading."""
@@ -848,7 +910,7 @@ class Package(PackageInterface):
 
     @staticmethod
     def load(
-        f: Union[str, bytes, os.PathLike],
+        f: Union[str, bytes, PathLike],
         model,
         pak_type,
         ext_unit_dict=None,
@@ -946,7 +1008,7 @@ class Package(PackageInterface):
                     aux_names.append(t[it + 1].lower())
                     it += 1
                 if "mfusgwel" in pak_type_str:
-                    if toption.lower() in ["autoflowreduce", "wellbot"]:
+                    if toption.lower() in {"autoflowreduce", "wellbot"}:
                         options.append(toption.lower())
                     elif toption.lower() == "iunitafr":
                         options.append(f"{toption.lower()} {t[it + 1]}")

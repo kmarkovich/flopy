@@ -2221,7 +2221,7 @@ def test_multi_model(function_tmpdir):
 
     with pytest.raises(
         flopy.mf6.mfbase.FlopyException,
-        match='Extraneous kwargs "param_does_not_exist" provided to MFPackage.',
+        match=r'Extraneous kwargs "param_does_not_exist" provided to MFPackage.',
     ):
         # test kwargs error checking
         wel = ModflowGwfwel(
@@ -2334,7 +2334,7 @@ def test_remove_model(function_tmpdir, example_data_path):
 
 @requires_pkg("shapely")
 @requires_exe("triangle")
-def test_flopy_2283(function_tmpdir):
+def test_issue_2283(function_tmpdir):
     # create triangular grid
     triangle_ws = function_tmpdir / "triangle"
     triangle_ws.mkdir()
@@ -2384,3 +2384,224 @@ def test_flopy_2283(function_tmpdir):
     assert gwf.modelgrid.xoffset == disv.xorigin.get_data()
     assert gwf.modelgrid.yoffset == disv.yorigin.get_data()
     assert gwf.modelgrid.angrot == disv.angrot.get_data()
+
+
+@pytest.mark.parametrize("form", ["flat", "list", "tuple"])
+@pytest.mark.parametrize("mode", ["internal", "external"])
+@pytest.mark.parametrize("list_", ["legacy", "pandas"])
+def test_issue_2583(function_tmpdir, form, mode, list_):
+    name = "2583"
+    sim = flopy.mf6.MFSimulation(
+        sim_name=name,
+        sim_ws=function_tmpdir,
+        exe_name="mf6",
+        use_pandas=list_ == "pandas",
+    )
+    tdis = flopy.mf6.ModflowTdis(sim)
+    ims = flopy.mf6.ModflowIms(sim)
+    gwf = flopy.mf6.ModflowGwf(sim, modelname=name, save_flows=True)
+    dis = flopy.mf6.ModflowGwfdis(gwf, nrow=10, ncol=10)
+    ic = flopy.mf6.ModflowGwfic(gwf)
+    npf = flopy.mf6.ModflowGwfnpf(
+        gwf, save_specific_discharge=True, save_saturation=True
+    )
+    if form == "flat":
+        chd_spd = {
+            0: [[0, 0, 0, 1.0, 1.0], [0, 9, 9, 0.0, 0.0]],
+            1: [[0, 0, 0, 0.0, 0.0], [0, 9, 9, 1.0, 2.0]],
+        }
+    elif form == "list":
+        chd_spd = {
+            0: [[[0, 0, 0], 1.0, 1.0], [[0, 9, 9], 0.0, 0.0]],
+            1: [[[0, 0, 0], 0.0, 0.0], [[0, 9, 9], 1.0, 2.0]],
+        }
+    elif form == "tuple":
+        chd_spd = {
+            0: [[(0, 0, 0), 1.0, 1.0], [(0, 9, 9), 0.0, 0.0]],
+            1: [[(0, 0, 0), 0.0, 0.0], [(0, 9, 9), 1.0, 2.0]],
+        }
+    chd = flopy.mf6.ModflowGwfchd(
+        gwf, pname="CHD-1", stress_period_data=chd_spd, auxiliary=["concentration"]
+    )
+    if mode == "external":
+        chd.set_all_data_external()
+
+    sim.write_simulation()
+
+    chd_file_path = function_tmpdir / f"{name}.chd"
+    data_lines = []
+
+    if mode == "internal":
+        chd_lines = chd_file_path.open().readlines()
+        read = False
+        for line in chd_lines:
+            if line.startswith("#"):
+                continue
+            if line.startswith("BEGIN period  1"):
+                read = True
+                continue
+            if line.startswith("END"):
+                read = False
+            if read:
+                data_lines.append(line.strip().split())
+    else:
+        data_file_path = function_tmpdir / "2583.chd_stress_period_data_1.txt"
+        data_lines = [l.strip().split() for l in data_file_path.open().readlines()]
+
+    assert len(data_lines) == 2
+
+    first = data_lines[0]
+    assert first[0] == "1"
+    assert first[1] == "1"
+    assert first[2] == "1"
+    assert float(first[3]) == 1.0
+    assert float(first[4]) == 1.0
+
+    second = data_lines[1]
+    assert second[0] == "1"
+    assert second[1] == "10"
+    assert second[2] == "10"
+    assert float(second[3]) == 0.0
+    assert float(second[4]) == 0.0
+
+
+def test_evt_auxiliary_variables(function_tmpdir):
+    """
+    Test EVT package with auxiliary variables and nseg > 1, as in
+    the report in https://github.com/modflowpy/flopy/issues/2683.
+
+    EVT packages with nseg > 1 AND auxiliary variables would fail
+    with an IndexError when writing to file.
+
+    The bug occurred because _get_file_entry_record didn't skip
+    EVT-specific optional fields (petm0, pxdp, petm) that weren't
+    present in the structured array, causing index calculation errors
+    when processing auxiliary variables.
+    """
+    test_configs = [
+        (1, False, 1),  # nseg=1, no surf_rate_specified, 1 aux var
+        (2, False, 1),  # nseg=2, no surf_rate_specified, 1 aux var (original bug)
+        (2, True, 1),  # nseg=2, with surf_rate_specified, 1 aux var
+        (4, False, 1),  # nseg=4, no surf_rate_specified, 1 aux var
+        (2, False, 3),  # nseg=2, no surf_rate_specified, 3 aux vars
+    ]
+
+    for nseg, surf_rate_specified, num_aux in test_configs:
+        name = f"evt_aux_nseg{nseg}"
+        if surf_rate_specified:
+            name += "_srs"
+        if num_aux > 1:
+            name += f"_{num_aux}aux"
+
+        ws = Path(function_tmpdir / name)
+        sim = flopy.mf6.MFSimulation(
+            sim_name=name, version="mf6", exe_name="mf6", sim_ws=ws
+        )
+
+        tdis = flopy.mf6.ModflowTdis(sim, nper=1, perioddata=[(1.0, 1, 1.0)])
+        gwf = flopy.mf6.ModflowGwf(sim, modelname=name, save_flows=True)
+        ims = flopy.mf6.ModflowIms(sim)
+        sim.register_ims_package(ims, [gwf.name])
+        dis = flopy.mf6.ModflowGwfdis(
+            gwf,
+            nlay=1,
+            nrow=3,
+            ncol=3,
+            delr=100.0,
+            delc=100.0,
+            top=10.0,
+            botm=0.0,
+        )
+        ic = flopy.mf6.ModflowGwfic(gwf, strt=5.0)
+        npf = flopy.mf6.ModflowGwfnpf(gwf, save_flows=True)
+
+        aux_names = [f"AUX{i + 1}" for i in range(num_aux)]
+
+        # Build stress period data based on nseg and surf_rate_specified
+        # [cellid, surface, rate, depth, pxdp..., petm..., petm0?, aux...]
+        data = [(0, 0, 0), 10.0, 0.001, 5.0]
+
+        # Add pxdp and petm values (nseg-1 values each)
+        if nseg > 1:
+            for _ in range(nseg - 1):
+                data.append(0.5)  # pxdp values
+            for _ in range(nseg - 1):
+                data.append(0.5)  # petm values
+
+        # Add petm0 if surf_rate_specified
+        if surf_rate_specified:
+            data.append(0.1)  # petm0 value
+
+        # Add auxiliary variable values
+        for i in range(num_aux):
+            data.append(float(i + 1))
+
+        evt_spd = [data]
+
+        evt = flopy.mf6.ModflowGwfevt(
+            gwf,
+            maxbound=1,
+            nseg=nseg,
+            surf_rate_specified=surf_rate_specified,
+            auxiliary=aux_names,
+            stress_period_data=evt_spd,
+        )
+
+        sim.write_simulation()
+
+        evt_file = ws / f"{name}.evt"
+        with open(evt_file, "r") as f:
+            evt_content = f.read()
+
+        # Version 3.9.2 incorrectly wrote 'nan' values
+        assert "nan" not in evt_content.lower(), (
+            f"EVT file contains 'nan' values (nseg={nseg}, "
+            f"surf_rate_specified={surf_rate_specified})"
+        )
+
+        # Count expected vs actual values in stress period data line
+        lines = evt_content.split("\n")
+        spd_line = None
+        in_period_block = False
+        for line in lines:
+            if "BEGIN PERIOD" in line.upper():
+                in_period_block = True
+            elif in_period_block and not line.strip().startswith("#") and line.strip():
+                spd_line = line.strip()
+                break
+
+        # Verify correct number of values
+        if spd_line:
+            values = spd_line.split()
+            expected_count = 3  # cellid (3 values for DIS)
+            expected_count += 3  # surface, rate, depth
+            if nseg > 1:
+                expected_count += (nseg - 1) * 2  # pxdp and petm
+            if surf_rate_specified:
+                expected_count += 1  # petm0
+            expected_count += num_aux  # auxiliary variables
+
+            assert len(values) == expected_count, (
+                f"Expected {expected_count} values, got {len(values)} (nseg={nseg})"
+            )
+
+        # Verify the written file can be loaded back
+        simload = flopy.mf6.MFSimulation.load("mfsim.nam", sim_ws=ws, exe_name="mf6")
+        gwf_load = simload.get_model()
+        evt_load = gwf_load.get_package("evt")
+
+        # Verify the simulation loaded successfully
+        assert gwf_load is not None
+        assert evt_load is not None
+
+        # Verify stress period data was loaded
+        spd_load = evt_load.stress_period_data.get_data(0)
+        assert spd_load is not None
+        assert len(spd_load) == 1
+
+        # Verify auxiliary values are present in dtype and have correct values
+        # Note: auxiliary names are lowercased when written/loaded
+        for i, aux_name in enumerate(aux_names):
+            aux_name_lower = aux_name.lower()
+            assert aux_name_lower in spd_load.dtype.names
+            assert spd_load[0][aux_name_lower] == float(i + 1)

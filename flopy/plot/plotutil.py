@@ -5,17 +5,21 @@ shapefiles are also included.
 
 """
 
-import os
+import os.path
 import warnings
 from itertools import repeat
+from os import PathLike
 from typing import Union
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from flopy.discretization.grid import Grid
+
 from ..datbase import DataInterface, DataType
 from ..utils import Util3d, import_optional_dependency
+from ..utils.faceutil import get_shared_face, get_shared_face_3d, is_vertical
 
 warnings.simplefilter("ignore", RuntimeWarning)
 
@@ -30,6 +34,7 @@ bc_color_dict = {
     "SFR": "teal",
     "UZF": "peru",
     "LAK": "royalblue",
+    "HFB": "orange",
 }
 
 
@@ -488,12 +493,6 @@ class PlotUtilities:
                                 **kwargs,
                             )
                         )
-
-                else:
-                    pass
-
-            else:
-                pass
 
             # unroll nested lists os axes into a single list of axes
             if isinstance(caxs, list):
@@ -1619,8 +1618,6 @@ class UnstructuredPlotUtilities:
                             cvert_ix.append(vx - 1)
                         elif cpv[vx - 1] == 0 and cpv[vx] == 0:
                             cvert_ix += [vx - 1, vx]
-                        else:
-                            pass
 
                     if cvert_ix:
                         cells.append(cell)
@@ -1978,18 +1975,18 @@ def shapefile_get_vertices(shp):
     vertices = []
     for n in range(nshp):
         st = shapes[n].shapeType
-        if st in [1, 8, 11, 21]:
+        if st in {1, 8, 11, 21}:
             # points
             for p in shapes[n].points:
                 vertices.append([(p[0], p[1])])
-        elif st in [3, 13, 23]:
+        elif st in {3, 13, 23}:
             # line
             line = []
             for p in shapes[n].points:
                 line.append((p[0], p[1]))
             line = np.array(line)
             vertices.append(line)
-        elif st in [5, 25, 31]:
+        elif st in {5, 25, 31}:
             # polygons
             pts = np.array(shapes[n].points)
             prt = shapes[n].parts
@@ -1999,7 +1996,7 @@ def shapefile_get_vertices(shp):
     return vertices
 
 
-def shapefile_to_patch_collection(shp: Union[str, os.PathLike], radius=500.0, idx=None):
+def shapefile_to_patch_collection(shp: Union[str, PathLike], radius=500.0, idx=None):
     """
     Create a patch collection from the shapes in a shapefile
 
@@ -2035,11 +2032,11 @@ def shapefile_to_patch_collection(shp: Union[str, os.PathLike], radius=500.0, id
         idx = range(nshp)
     for n in idx:
         st = shapes[n].shapeType
-        if st in [1, 8, 11, 21]:
+        if st in {1, 8, 11, 21}:
             # points
             for p in shapes[n].points:
                 ptchs.append(Circle((p[0], p[1]), radius=radius))
-        elif st in [3, 13, 23]:
+        elif st in {3, 13, 23}:
             # line
             vertices = []
             for p in shapes[n].points:
@@ -2047,7 +2044,7 @@ def shapefile_to_patch_collection(shp: Union[str, os.PathLike], radius=500.0, id
             vertices += vertices[::-1]
             vertices = np.array(vertices)
             ptchs.append(Polygon(vertices))
-        elif st in [5, 25, 31]:
+        elif st in {5, 25, 31}:
             # polygons
             pts = np.array(shapes[n].points)
             prt = shapes[n].parts
@@ -2125,7 +2122,7 @@ def plot_shapefile(
 
     Parameters
     ----------
-    shp : string or os.PathLike
+    shp : str or PathLike
         Path of the shapefile to plot.
     ax : matplolib.pyplot.axes object
 
@@ -2241,7 +2238,7 @@ def advanced_package_bc_helper(pkg, modelgrid, kper):
     Returns
     -------
     """
-    if pkg.package_type in ("sfr", "uzf"):
+    if pkg.package_type in {"sfr", "uzf"}:
         if pkg.parent.version == "mf6":
             mflist = pkg.packagedata.array
             idx = np.array([list(i) for i in mflist["cellid"]], dtype=int).T
@@ -2249,7 +2246,7 @@ def advanced_package_bc_helper(pkg, modelgrid, kper):
             iuzfbnd = pkg.iuzfbnd.array
             idx = np.asarray(iuzfbnd != 0).nonzero()
             idx = np.append([[0] * idx[-1].size], idx, axis=0)
-    elif pkg.package_type in ("lak", "maw"):
+    elif pkg.package_type in {"lak", "maw"}:
         if pkg.parent.version == "mf6":
             mflist = pkg.connectiondata.array
             idx = np.array([list(i) for i in mflist["cellid"]], dtype=int).T

@@ -7,6 +7,7 @@ mf module.  Contains the ModflowGlobal, ModflowList, and Modflow classes.
 import os
 import warnings
 from inspect import getfullargspec
+from os import PathLike, curdir
 from pathlib import Path
 from typing import Optional, Union
 
@@ -75,9 +76,8 @@ class Modflow(BaseModel):
         Specify if model grid is structured (default) or unstructured.
     listunit : int, default 2
         Unit number for the list file.
-    model_ws : str or PathLike, default "."
+    model_ws : str or PathLike, default "." (curdir)
         Model workspace.  Directory name to create model data sets.
-        (default is the present working directory).
     external_path : str or PathLike, optional
         Location for external files.
     verbose : bool, default False
@@ -85,6 +85,12 @@ class Modflow(BaseModel):
     extra_pkgs : dict, optional
         Add custom packages classes to mfnam_packages. Allows for loading models
         with custom packages not contained in the standard flopy distribution.
+    free_format_npl : int, optional
+        Number of values per line when writing free-format arrays. When set
+        (e.g., ``free_format_npl=10``), arrays are written with that many
+        values per line instead of all values on a single line. This produces
+        block-format output, improving readability for large models.
+        Default is None (all values on one line).
 
     Attributes
     ----------
@@ -110,13 +116,14 @@ class Modflow(BaseModel):
         modelname="modflowtest",
         namefile_ext="nam",
         version="mf2005",
-        exe_name: Union[str, os.PathLike] = "mf2005",
+        exe_name: Union[str, PathLike] = "mf2005",
         structured=True,
         listunit=2,
-        model_ws: Union[str, os.PathLike] = os.curdir,
-        external_path: Optional[Union[str, os.PathLike]] = None,
+        model_ws: Union[str, PathLike] = curdir,
+        external_path: Union[str, PathLike, None] = None,
         verbose=False,
         extra_pkgs: Optional[dict] = None,
+        free_format_npl=None,
         **kwargs,
     ):
         super().__init__(
@@ -126,6 +133,7 @@ class Modflow(BaseModel):
             model_ws,
             structured=structured,
             verbose=verbose,
+            free_format_npl=free_format_npl,
             **kwargs,
         )
         self.version_types = {
@@ -629,9 +637,9 @@ class Modflow(BaseModel):
         cls,
         f: str,
         version="mf2005",
-        exe_name: Union[str, os.PathLike] = "mf2005",
+        exe_name: Union[str, PathLike] = "mf2005",
         verbose=False,
-        model_ws: Union[str, os.PathLike] = os.curdir,
+        model_ws: Union[str, PathLike] = curdir,
         load_only=None,
         forgive=False,
         check=True,
@@ -652,8 +660,8 @@ class Modflow(BaseModel):
             MODFLOW executable name or path.
         verbose : bool, default False
             Show messages that can be useful for debugging.
-        model_ws : str or PathLike, default "."
-            Model workspace path. Default is the current directory.
+        model_ws : str or PathLike, default "." (curdir)
+            Model workspace path.
         load_only : list, str or None
             List of case insensitive packages to load, e.g. ["bas6", "lpf"].
             One package can also be specified, e.g. "rch". Default is None,
